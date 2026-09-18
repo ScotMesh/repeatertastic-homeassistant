@@ -15,7 +15,7 @@ for arch in arm64 arm amd64; do
     -o "$work/bin/repeatertastic-homeassistant-linux-$arch" ./cmd/repeatertastic-homeassistant
 done
 sed "s/^version: .*/version: ${version#v}/" cmd/repeatertastic-homeassistant/plugin.yaml > "$work/plugin.yaml"
-cp assets/logo.svg LICENSE "$work/"
+cp assets/logo.png LICENSE "$work/"
 rm -f "$out"
 ( cd "$work" && zip -qr -X "$out" . )
 echo "wrote $out"

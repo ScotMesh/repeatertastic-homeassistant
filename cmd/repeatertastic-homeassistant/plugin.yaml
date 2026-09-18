@@ -3,11 +3,11 @@ id: homeassistant
 name: Home Assistant
 version: 0.0.0 # set by scripts/bundle.sh
 api: 1
-description: Publishes the site and the nodes you pick to Home Assistant over MQTT, as devices with sensors. Nothing to configure at the Home Assistant end.
+description: Community built, and not affiliated with or endorsed by Home Assistant. Publishes your site and the nodes you pick to Home Assistant over MQTT, as devices with sensors, with nothing to configure at the Home Assistant end.
 author: ScotMesh
 homepage: https://github.com/ScotMesh/repeatertastic-homeassistant
 license: GPL-3.0-or-later
-logo: logo.svg
+logo: logo.png
 permissions:
   - status.read
   - nodes.read

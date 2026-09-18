@@ -1,7 +1,8 @@
 # RepeaterTastic for Home Assistant
 
-A [RepeaterTastic](https://github.com/ScotMesh/RepeaterTastic) plugin that publishes your site and
-the nodes you pick to Home Assistant over MQTT. They arrive as devices with sensors; there is
+A **community-built** [RepeaterTastic](https://github.com/ScotMesh/RepeaterTastic) plugin that
+publishes your site and the nodes you pick to Home Assistant over MQTT. It is not affiliated with,
+endorsed by, or supported by Home Assistant or the Open Home Foundation. They arrive as devices with sensors; there is
 nothing to configure at the Home Assistant end.
 
 ```
@@ -72,3 +73,7 @@ The bundle carries builds for 64-bit and 32-bit Raspberry Pi OS and x86-64.
 ## Licence
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The Home Assistant name and logo are trademarks of the Open Home Foundation. The logo is used here
+only to identify what this plugin talks to, and the icon comes from Home Assistant's own
+[brands](https://brands.home-assistant.io) service.
