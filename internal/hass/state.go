@@ -17,8 +17,18 @@ func (l *Link) publish() {
 	if l.client == nil || !l.client.IsConnected() {
 		return
 	}
-	l.announceSite()
-	l.pub(l.siteState(), l.siteStateJSON(), true)
+	l.publishNoBroker()
+}
+
+// publishNoBroker is publish once the broker has been checked, so tests can drive it with
+// publishFn standing in for a connection.
+func (l *Link) publishNoBroker() {
+	// With no figures yet, say nothing rather than publish zeros: a zero counter reads as a
+	// counter reset in Home Assistant's statistics, and a zeroed radio reads as one that is down.
+	if site := l.siteStateJSON(); site != nil {
+		l.announceSite()
+		l.pub(l.siteState(), site, true)
+	}
 
 	nodes := l.nodesToPublish()
 	live := make(map[string]bool, len(nodes))
@@ -59,7 +69,8 @@ func summaryLine(n int) string {
 
 // siteStateJSON is every figure the site's entities read, added up across the radios being
 // published. Counters are totals since the daemon started, which is what Home Assistant's
-// total_increasing expects.
+// total_increasing expects. It returns nil when no radio has reported yet, because publishing
+// zeros then would be a lie the statistics remember.
 func (l *Link) siteStateJSON() map[string]any {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -105,7 +116,7 @@ func (l *Link) siteStateJSON() map[string]any {
 		uptime = max(uptime, r.GetUptimeS())
 	}
 	if radios == 0 {
-		connected = false
+		return nil
 	}
 
 	ackPct := 0.0

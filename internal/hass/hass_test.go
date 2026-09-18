@@ -340,3 +340,45 @@ func TestNodeIDFormatting(t *testing.T) {
 		}
 	}
 }
+
+func TestNoFiguresYetMeansNoSiteState(t *testing.T) {
+	// Before the first status arrives there is nothing true to say about the radios. Publishing
+	// zeros would tell Home Assistant the counters reset and the radio is down, and its
+	// statistics would remember both.
+	l := testLink(t, Settings{Scope: "all"}, node("!aaaa0001", time.Minute))
+	if s := l.siteStateJSON(); s != nil {
+		t.Fatalf("wanted no site state before any radio has reported, got %v", s)
+	}
+
+	got := capture(l)
+	l.publishNoBroker()
+	for _, c := range *got {
+		if c.topic == l.siteState() {
+			t.Error("the site state was published with no figures behind it")
+		}
+		if strings.Contains(c.topic, "/rt_"+l.site+"/") {
+			t.Error("the site's entities were announced before it had anything to report")
+		}
+	}
+	// The nodes are still published: those readings are real.
+	if len(*got) == 0 {
+		t.Error("nothing at all was published")
+	}
+
+	// Once a radio reports, the site turns up.
+	l.status["main"] = &pluginv1.RadioStatus{RadioId: "main", Connected: true, Rx: 5}
+	*got = nil
+	l.publishNoBroker()
+	found := false
+	for _, c := range *got {
+		if c.topic == l.siteState() {
+			found = true
+			if c.payload["rx"] != 5.0 {
+				t.Errorf("rx is %v", c.payload["rx"])
+			}
+		}
+	}
+	if !found {
+		t.Error("the site state was not published once a radio had reported")
+	}
+}

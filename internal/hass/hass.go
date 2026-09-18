@@ -186,6 +186,12 @@ func (l *Link) Run(ctx context.Context) error {
 		return fmt.Errorf("connecting to %s: %w", l.set.Broker, tok.Error())
 	}
 
+	// Ask for both pictures before the first publish. Without this the first publish would go
+	// out with no radio figures at all, and Home Assistant would record a counter reset and a
+	// radio that looks down, until the first status event 30 seconds later put it right.
+	if err := l.loadStatus(ctx); err != nil {
+		l.logf("warn", "could not read the radio status: %v", err)
+	}
 	if err := l.loadNodes(ctx); err != nil {
 		l.logf("warn", "could not read the node list: %v", err)
 	}
@@ -233,6 +239,21 @@ func (l *Link) handle(msg *pluginv1.HostMessage) {
 		// say so in the log.
 		l.logf("info", "settings changed; restarting to apply them")
 	}
+}
+
+// loadStatus fills in the radios' figures at startup, rather than waiting for the first status
+// event.
+func (l *Link) loadStatus(ctx context.Context) error {
+	resp, err := l.c.Host.GetStatus(ctx, &pluginv1.GetStatusRequest{})
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, r := range resp.GetRadios() {
+		l.status[r.GetRadioId()] = r
+	}
+	return nil
 }
 
 // loadNodes fills the picture in at startup, so the first publish isn't empty while waiting for
