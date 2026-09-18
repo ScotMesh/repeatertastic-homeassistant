@@ -1,3 +1,7 @@
+github.com/ScotMesh/RepeaterTastic v0.3.4-0.20260918170735-e33acf2341c2 h1:1wihLRqaT7cdZ8LMFfhU8EmaR8Hs7wIelGFhrNAqfrQ=
+github.com/ScotMesh/RepeaterTastic v0.3.4-0.20260918170735-e33acf2341c2/go.mod h1:JDI6rg0lZiDPD26fEMKaTgnteLNILt7IQBHrqx95p6g=
+github.com/ScotMesh/RepeaterTastic v0.3.4-0.20260918172732-1dde51d045f2 h1:Fu84fEL4ceAja9VqN4GSeJhCU9YRSA5CtUsA/vfACaU=
+github.com/ScotMesh/RepeaterTastic v0.3.4-0.20260918172732-1dde51d045f2/go.mod h1:JDI6rg0lZiDPD26fEMKaTgnteLNILt7IQBHrqx95p6g=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/eclipse/paho.mqtt.golang v1.5.1 h1:/VSOv3oDLlpqR2Epjn1Q7b2bSTplJIeV2ISgCl2W7nE=
