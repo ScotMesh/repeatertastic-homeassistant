@@ -2,6 +2,7 @@ package hass
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -79,39 +80,30 @@ func TestScopeWidensTheList(t *testing.T) {
 	far := node("!eeee0005", time.Minute)
 	withBatt := node("!ffff0006", time.Minute, withBattery(80))
 	stale := node("!99990007", 48*time.Hour, direct())
+	all := []*pluginv1.Node{near, far, withBatt, stale}
 
-	cases := map[string][]string{
+	for scope, want := range map[string][]string{
 		"picked":    {},
 		"direct":    {"!dddd0004"},
 		"telemetry": {"!ffff0006"},
-		"all":       {"!9999f007"}, // placeholder, replaced below
-	}
-	for scope, want := range cases {
+	} {
 		t.Run(scope, func(t *testing.T) {
-			l := testLink(t, Settings{Scope: scope}, near, far, withBatt, stale)
-			got := ids(l.nodesToPublish())
-			if scope == "all" {
-				// Everything heard inside the stale window, and not the one that wasn't.
-				if len(got) != 3 {
-					t.Fatalf("wanted the three recent nodes, got %v", got)
-				}
-				for _, id := range got {
-					if id == "!99990007" {
-						t.Error("a node silent for 48h was published under a 24h window")
-					}
-				}
-				return
-			}
-			if len(got) != len(want) {
-				t.Fatalf("wanted %v, got %v", want, got)
-			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("wanted %v, got %v", want, got)
-				}
+			got := ids(testLink(t, Settings{Scope: scope}, all...).nodesToPublish())
+			if !slices.Equal(got, want) {
+				t.Errorf("scope %s: wanted %v, got %v", scope, want, got)
 			}
 		})
 	}
+
+	t.Run("all", func(t *testing.T) {
+		got := ids(testLink(t, Settings{Scope: "all"}, all...).nodesToPublish())
+		if len(got) != 3 {
+			t.Fatalf("wanted the three recent nodes, got %v", got)
+		}
+		if slices.Contains(got, "!99990007") {
+			t.Error("a node silent for 48h was published under a 24h window")
+		}
+	})
 }
 
 func TestTheCeilingDoesNotApplyToPicks(t *testing.T) {
@@ -277,6 +269,18 @@ func TestDiscoveryDocumentsAreRetainedAndPointAtTheState(t *testing.T) {
 	if battery == nil {
 		t.Fatal("no battery entity was announced")
 	}
+	checkBatteryDocument(t, l, battery)
+
+	// Announcing again does nothing: discovery is retained, so repeating it is pure broker noise.
+	before := len(*got)
+	l.announceNode(l.nodes["!aaaa0001"], false)
+	if len(*got) != before {
+		t.Error("the same node was announced twice")
+	}
+}
+
+func checkBatteryDocument(t *testing.T, l *Link, battery *captured) {
+	t.Helper()
 	if battery.payload["state_topic"] != l.nodeState("!aaaa0001") {
 		t.Errorf("the battery reads from %v, not the node's state topic", battery.payload["state_topic"])
 	}
@@ -292,13 +296,6 @@ func TestDiscoveryDocumentsAreRetainedAndPointAtTheState(t *testing.T) {
 	}
 	if dev["via_device"] != "rt_a1c40e07" {
 		t.Errorf("a node should hang off the site, got %v", dev["via_device"])
-	}
-
-	// Announcing again does nothing: discovery is retained, so repeating it is pure broker noise.
-	before := len(*got)
-	l.announceNode(l.nodes["!aaaa0001"], false)
-	if len(*got) != before {
-		t.Error("the same node was announced twice")
 	}
 }
 

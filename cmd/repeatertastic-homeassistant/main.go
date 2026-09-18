@@ -38,22 +38,23 @@ func main() {
 	defer stop()
 
 	opts := sdk.Options{Version: version}
-	managed := os.Getenv("RT_PLUGIN_SOCKET") != ""
-	if !managed {
-		opts.ManifestYAML = manifest
-		if os.Getenv("RT_PLUGIN_ID") == "" {
-			opts.ID = "homeassistant"
-		}
-	}
-	if managed {
-		// RepeaterTastic restarts a managed plugin that exits.
+	if os.Getenv("RT_PLUGIN_SOCKET") != "" {
+		// Managed: RepeaterTastic starts this and restarts it if it exits.
 		if err := session(ctx, opts); err != nil && !errors.Is(err, context.Canceled) {
 			log.Fatal(err)
 		}
 		return
 	}
-	// Attached: keep trying. RepeaterTastic refuses the session until the settings are filled in,
-	// and the connection comes and goes with restarts.
+	opts.ManifestYAML = manifest
+	if os.Getenv("RT_PLUGIN_ID") == "" {
+		opts.ID = "homeassistant"
+	}
+	reconnect(ctx, opts)
+}
+
+// reconnect keeps an attached plugin trying. RepeaterTastic refuses the session until the settings
+// are filled in, and the connection comes and goes with restarts, so neither is a reason to stop.
+func reconnect(ctx context.Context, opts sdk.Options) {
 	wait := 2 * time.Second
 	for ctx.Err() == nil {
 		start := time.Now()

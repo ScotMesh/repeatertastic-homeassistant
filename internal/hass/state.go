@@ -75,86 +75,91 @@ func summaryLine(n int) string {
 // zeros then would be a lie the statistics remember.
 func (l *Link) siteStateJSON() map[string]any {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	var (
-		airtime, chanUtil, dutyLimit float64
-		noise                        int32
-		haveNoise                    bool
-		overDuty                     bool
-		radios                       int
-		connected                    = true
-		rx, tx, dupe, undec          uint64
-		ackOK, ackFail               uint64
-		queue, heard                 uint32
-		uptime                       int64
-	)
 	ids := make([]string, 0, len(l.status))
 	for id := range l.status {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids) // a stable order, so the noise floor below is deterministic
-	for _, id := range ids {
-		r := l.status[id]
-		if !l.wantRadio(id) {
-			continue
+		if l.wantRadio(id) {
+			ids = append(ids, id)
 		}
-		radios++
-		// The busiest radio is the one worth alarming on, so take the worst of each figure
-		// rather than an average that hides it.
-		airtime = max(airtime, r.GetAirtimeTxPct())
-		chanUtil = max(chanUtil, r.GetChannelUtilPct())
-		dutyLimit = max(dutyLimit, r.GetDutyLimitPct())
+	}
+	sort.Strings(ids) // a stable order, so the figures below are deterministic
+	radios := make([]*pluginv1.RadioStatus, 0, len(ids))
+	for _, id := range ids {
+		radios = append(radios, l.status[id])
+	}
+	l.mu.Unlock()
+
+	if len(radios) == 0 {
+		return nil
+	}
+	t := total(radios)
+	ackPct := 0.0
+	if acks := t.ackOK + t.ackFail; acks > 0 {
+		ackPct = float64(t.ackOK) / float64(acks) * 100
+	}
+	out := map[string]any{
+		"airtime_tx_pct":   round1(t.airtime),
+		"channel_util_pct": round1(t.chanUtil),
+		"noise_floor_dbm":  nil,
+		"rx":               t.rx,
+		"tx":               t.tx,
+		"rx_dupe":          t.dupe,
+		"rx_undecryptable": t.undec,
+		"ack_pct":          round1(ackPct),
+		"nodes_heard":      t.heard,
+		"queue":            t.queue,
+		"connected":        onOff(t.connected),
+		"duty_exceeded":    onOff(t.overDuty),
+		"duty_limit_pct":   round1(t.dutyLimit),
+		"uptime_s":         t.uptime,
+	}
+	if t.haveNoise {
+		out["noise_floor_dbm"] = t.noise
+	}
+	return out
+}
+
+// totals is the site's figures across the radios being published.
+type totals struct {
+	airtime, chanUtil, dutyLimit float64
+	noise                        int32
+	haveNoise, overDuty          bool
+	connected                    bool
+	rx, tx, dupe, undec          uint64
+	ackOK, ackFail               uint64
+	queue, heard                 uint32
+	uptime                       int64
+}
+
+// total adds the radios up. The worst of each figure is what is worth alarming on, so a busy
+// radio is not averaged away by a quiet one.
+func total(radios []*pluginv1.RadioStatus) totals {
+	t := totals{connected: true}
+	for _, r := range radios {
+		t.airtime = max(t.airtime, r.GetAirtimeTxPct())
+		t.chanUtil = max(t.chanUtil, r.GetChannelUtilPct())
+		t.dutyLimit = max(t.dutyLimit, r.GetDutyLimitPct())
 		// Each radio is over its own limit or it isn't. Comparing the busiest radio's airtime
 		// against another radio's limit reports a breach nobody is committing.
 		if limit := r.GetDutyLimitPct(); limit > 0 && r.GetAirtimeTxPct() > limit {
-			overDuty = true
+			t.overDuty = true
 		}
 		// A noise floor is negative dBm, and zero means "not measured yet" rather than a very
-		// loud band. Taking the worst of the radios that have measured keeps a radio that has
-		// only just come up from publishing a 0 that ruins the statistics.
-		if n := r.GetNoiseFloorDbm(); n != 0 && (!haveNoise || n > noise) {
-			noise, haveNoise = n, true
+		// loud band, so a radio that has only just come up must not win.
+		if n := r.GetNoiseFloorDbm(); n != 0 && (!t.haveNoise || n > t.noise) {
+			t.noise, t.haveNoise = n, true
 		}
-		connected = connected && r.GetConnected()
-		rx += r.GetRx()
-		tx += r.GetTx()
-		dupe += r.GetRxDupe()
-		undec += r.GetRxUndecryptable()
-		ackOK += r.GetAckOk()
-		ackFail += r.GetAckFail()
-		queue += r.GetQueue()
-		heard = max(heard, r.GetNodesHeard())
-		uptime = max(uptime, r.GetUptimeS())
+		t.connected = t.connected && r.GetConnected()
+		t.rx += r.GetRx()
+		t.tx += r.GetTx()
+		t.dupe += r.GetRxDupe()
+		t.undec += r.GetRxUndecryptable()
+		t.ackOK += r.GetAckOk()
+		t.ackFail += r.GetAckFail()
+		t.queue += r.GetQueue()
+		t.heard = max(t.heard, r.GetNodesHeard())
+		t.uptime = max(t.uptime, r.GetUptimeS())
 	}
-	if radios == 0 {
-		return nil
-	}
-
-	ackPct := 0.0
-	if acks := ackOK + ackFail; acks > 0 {
-		ackPct = float64(ackOK) / float64(acks) * 100
-	}
-	out := map[string]any{
-		"airtime_tx_pct":   round1(airtime),
-		"channel_util_pct": round1(chanUtil),
-		"noise_floor_dbm":  nil,
-		"rx":               rx,
-		"tx":               tx,
-		"rx_dupe":          dupe,
-		"rx_undecryptable": undec,
-		"ack_pct":          round1(ackPct),
-		"nodes_heard":      heard,
-		"queue":            queue,
-		"connected":        onOff(connected),
-		"duty_exceeded":    onOff(overDuty),
-		"duty_limit_pct":   round1(dutyLimit),
-		"uptime_s":         uptime,
-	}
-	if haveNoise {
-		out["noise_floor_dbm"] = noise
-	}
-	return out
+	return t
 }
 
 // nodesToPublish applies the scope, the picks and the ceiling. Picked nodes come first and are
@@ -172,37 +177,20 @@ func (l *Link) nodesToPublish() []*pluginv1.Node {
 
 	var picked, rest []*pluginv1.Node
 	for _, n := range all {
-		if !l.wantRadio(n.GetRadioId()) {
-			continue
-		}
-		if picks[strings.ToLower(n.GetNodeId())] {
+		switch {
+		case !l.wantRadio(n.GetRadioId()):
+		case picks[strings.ToLower(n.GetNodeId())]:
 			picked = append(picked, n)
-			continue
+		case l.inScope(n, now):
+			rest = append(rest, n)
 		}
-		if l.set.Scope == "picked" {
-			continue
-		}
-		heard := n.GetLastHeardMs()
-		if heard == 0 || now.Sub(time.UnixMilli(heard)) > l.set.staleWindow() {
-			continue
-		}
-		switch l.set.Scope {
-		case "direct":
-			if n.GetHopsAway() != 0 {
-				continue
-			}
-		case "telemetry":
-			if len(n.GetDeviceMetrics()) == 0 {
-				continue
-			}
-		}
-		rest = append(rest, n)
 	}
 	byHeard := func(s []*pluginv1.Node) {
 		sort.Slice(s, func(i, j int) bool { return s[i].GetLastHeardMs() > s[j].GetLastHeardMs() })
 	}
 	byHeard(picked)
 	byHeard(rest)
+
 	// The ceiling is on the nodes nobody asked for by name; a pick is a deliberate choice and
 	// isn't going to be pushed out by a chatty stranger.
 	out := picked
@@ -213,6 +201,25 @@ func (l *Link) nodesToPublish() []*pluginv1.Node {
 		out = append(out, n)
 	}
 	return out
+}
+
+// inScope reports whether an unpicked node is one the "Also publish" setting asks for.
+func (l *Link) inScope(n *pluginv1.Node, now time.Time) bool {
+	if l.set.Scope == "picked" {
+		return false
+	}
+	heard := n.GetLastHeardMs()
+	if heard == 0 || now.Sub(time.UnixMilli(heard)) > l.set.staleWindow() {
+		return false
+	}
+	switch l.set.Scope {
+	case "direct":
+		return n.GetHopsAway() == 0
+	case "telemetry":
+		return len(n.GetDeviceMetrics()) > 0
+	default:
+		return true
+	}
 }
 
 // nodeStateJSON is one node's readings. A field the node has stopped reporting is sent as null
