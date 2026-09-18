@@ -2,10 +2,8 @@ module github.com/ScotMesh/repeatertastic-homeassistant
 
 go 1.25.0
 
-// RepeaterTastic is pinned to the branch that adds status.read and the nodes settings type.
-// This moves to a release tag once that lands.
 require (
-	github.com/ScotMesh/RepeaterTastic v0.3.4-0.20260918172732-1dde51d045f2
+	github.com/ScotMesh/RepeaterTastic v0.4.0
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	google.golang.org/protobuf v1.36.12
 )

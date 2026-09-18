@@ -9,6 +9,9 @@ nothing to configure at the Home Assistant end.
 Plugins → Browse store → Home Assistant → Install
 ```
 
+Needs RepeaterTastic 0.4.0 or newer, which is where `status.read` and the node
+picker arrived.
+
 Then fill in your broker and tick the nodes you care about.
 
 ## What turns up in Home Assistant
