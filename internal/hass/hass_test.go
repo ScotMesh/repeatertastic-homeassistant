@@ -150,14 +150,36 @@ func TestExternalPowerIsNotA101PercentBattery(t *testing.T) {
 	}
 }
 
-func TestAFieldNeverReportedIsLeftOut(t *testing.T) {
-	// Home Assistant shows "unknown" for a missing field, which is honest. A zero would be a
-	// confident wrong reading.
+func TestAFieldNeverReportedIsSentAsNull(t *testing.T) {
+	// The key has to be there and null. Leaving it out renders empty, which Home Assistant
+	// ignores — so the entity would keep whatever it last showed instead of going unknown, and a
+	// battery that stopped reporting would sit at its final reading for ever.
 	state := nodeStateJSON(&pluginv1.Node{NodeId: "!aaaa0001", HopsAway: -1})
-	for _, k := range []string{"battery", "voltage", "snr", "rssi", "hops", "last_heard"} {
-		if _, ok := state[k]; ok {
-			t.Errorf("%s was reported for a node that has never sent one: %v", k, state[k])
+	for _, k := range []string{"battery", "voltage", "snr", "rssi", "hops", "last_heard", "powered"} {
+		v, ok := state[k]
+		if !ok {
+			t.Errorf("%s is missing entirely, so Home Assistant would keep its last value", k)
+		} else if v != nil {
+			t.Errorf("%s should be null for a node that has never sent one, got %v", k, v)
 		}
+	}
+}
+
+func TestAZeroSNRIsAReading(t *testing.T) {
+	// 0 dB is an ordinary signal-to-noise ratio, not a missing one.
+	n := node("!aaaa0001", time.Minute)
+	n.Snr, n.Rssi = 0, 0
+	state := nodeStateJSON(n)
+	if state["snr"] != 0.0 {
+		t.Errorf("snr should be 0 for a node heard at 0 dB, got %v", state["snr"])
+	}
+	if state["rssi"] != int32(0) {
+		t.Errorf("rssi should be 0, got %v (%T)", state["rssi"], state["rssi"])
+	}
+	// A node never heard has no signal figures at all.
+	never := nodeStateJSON(&pluginv1.Node{NodeId: "!bbbb0002", HopsAway: -1})
+	if never["snr"] != nil {
+		t.Errorf("a node never heard should have no snr, got %v", never["snr"])
 	}
 }
 
@@ -234,7 +256,7 @@ func capture(l *Link) *[]captured {
 func TestDiscoveryDocumentsAreRetainedAndPointAtTheState(t *testing.T) {
 	l := testLink(t, Settings{}, node("!aaaa0001", time.Minute, withName("Shed")))
 	got := capture(l)
-	l.announceNode(l.nodes["!aaaa0001"])
+	l.announceNode(l.nodes["!aaaa0001"], false)
 
 	if len(*got) != len(nodeEntities) {
 		t.Fatalf("wanted one document per entity, got %d", len(*got))
@@ -274,7 +296,7 @@ func TestDiscoveryDocumentsAreRetainedAndPointAtTheState(t *testing.T) {
 
 	// Announcing again does nothing: discovery is retained, so repeating it is pure broker noise.
 	before := len(*got)
-	l.announceNode(l.nodes["!aaaa0001"])
+	l.announceNode(l.nodes["!aaaa0001"], false)
 	if len(*got) != before {
 		t.Error("the same node was announced twice")
 	}
@@ -283,7 +305,7 @@ func TestDiscoveryDocumentsAreRetainedAndPointAtTheState(t *testing.T) {
 func TestForgettingANodeClearsItsEntities(t *testing.T) {
 	l := testLink(t, Settings{}, node("!aaaa0001", time.Minute))
 	got := capture(l)
-	l.announceNode(l.nodes["!aaaa0001"])
+	l.announceNode(l.nodes["!aaaa0001"], false)
 	*got = nil // the announcements are not what this test is about
 	l.forget("!aaaa0001")
 
@@ -351,7 +373,7 @@ func TestNoFiguresYetMeansNoSiteState(t *testing.T) {
 	}
 
 	got := capture(l)
-	l.publishNoBroker()
+	l.publishNoBroker(false)
 	for _, c := range *got {
 		if c.topic == l.siteState() {
 			t.Error("the site state was published with no figures behind it")
@@ -368,7 +390,7 @@ func TestNoFiguresYetMeansNoSiteState(t *testing.T) {
 	// Once a radio reports, the site turns up.
 	l.status["main"] = &pluginv1.RadioStatus{RadioId: "main", Connected: true, Rx: 5}
 	*got = nil
-	l.publishNoBroker()
+	l.publishNoBroker(false)
 	found := false
 	for _, c := range *got {
 		if c.topic == l.siteState() {
@@ -380,5 +402,37 @@ func TestNoFiguresYetMeansNoSiteState(t *testing.T) {
 	}
 	if !found {
 		t.Error("the site state was not published once a radio had reported")
+	}
+}
+
+func TestAnnouncingAgainKeepsWhatCanStillBeRemoved(t *testing.T) {
+	// Home Assistant's birth message asks for everything again. Clearing the record of what has
+	// been announced would strand a node that has since gone quiet: nothing would be left to
+	// remove its entities, and they would sit in Home Assistant for ever.
+	l := testLink(t, Settings{Scope: "all"}, node("!aaaa0001", time.Minute))
+	l.status["main"] = &pluginv1.RadioStatus{RadioId: "main", Connected: true}
+	got := capture(l)
+
+	l.publishNoBroker(false)
+	l.mu.Lock()
+	announced := len(l.announced)
+	l.mu.Unlock()
+	if announced != 2 { // the site and the node
+		t.Fatalf("wanted the site and one node announced, got %d", announced)
+	}
+
+	// The node goes quiet past the stale window, and at the same moment Home Assistant restarts.
+	l.nodes["!aaaa0001"].LastHeardMs = time.Now().Add(-48 * time.Hour).UnixMilli()
+	*got = nil
+	l.publishNoBroker(true)
+
+	cleared := 0
+	for _, c := range *got {
+		if c.payload == nil && strings.Contains(c.topic, "rt_node_aaaa0001") {
+			cleared++
+		}
+	}
+	if cleared != len(nodeEntities) {
+		t.Errorf("the stale node's entities were not removed: %d of %d cleared", cleared, len(nodeEntities))
 	}
 }

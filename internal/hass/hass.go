@@ -77,6 +77,13 @@ func (s *Settings) interval() time.Duration { return time.Duration(s.IntervalSec
 // anything.
 func (s *Settings) staleWindow() time.Duration { return time.Duration(s.StaleAfterHrs) * time.Hour }
 
+// publishWait is how long to wait for the broker to take a document that has to arrive.
+const publishWait = 10 * time.Second
+
+// connectWait is how long Run waits for a first connection before carrying on and letting paho
+// keep trying in the background.
+const connectWait = 20 * time.Second
+
 // Link is one run of the plugin: a broker connection and what it has told Home Assistant about.
 type Link struct {
 	c   *sdk.Client
@@ -90,6 +97,10 @@ type Link struct {
 	// publishFn is how a payload reaches the broker. Tests replace it to see what would have
 	// been sent without standing a broker up.
 	publishFn func(topic string, v any, retain bool)
+
+	// wake carries a request to publish from a broker callback into Run, so publishing only ever
+	// happens on one goroutine and never inside paho's message router.
+	wake chan bool // true = announce everything again
 
 	mu        sync.Mutex
 	announced map[string]bool // node id (no "!") -> its discovery has been published
@@ -106,7 +117,8 @@ func New(c *sdk.Client, set Settings, version string) *Link {
 		picked[strings.ToLower(strings.TrimSpace(id))] = true
 	}
 	l := &Link{c: c, set: set, ver: version, announced: map[string]bool{}, picked: picked,
-		nodes: map[string]*pluginv1.Node{}, status: map[string]*pluginv1.RadioStatus{}}
+		nodes: map[string]*pluginv1.Node{}, status: map[string]*pluginv1.RadioStatus{},
+		wake: make(chan bool, 1)}
 	if radios := c.Welcome.GetRadios(); len(radios) > 0 {
 		l.radio = radios[0]
 		l.site = strings.TrimPrefix(radios[0].GetRelay().GetNodeId(), "!")
@@ -162,33 +174,46 @@ func (l *Link) Run(ctx context.Context) error {
 		l.logf("info", "connected to the broker at %s", l.set.Broker)
 		c.Publish(l.availTopic(), 1, true, "online")
 		// Home Assistant republishes its birth message when it restarts; that is the moment to
-		// re-announce, because a broker that lost its retained store would otherwise leave Home
-		// Assistant with no entities at all.
+		// announce again, because a broker that lost its retained store would otherwise leave
+		// Home Assistant with no entities at all.
 		c.Subscribe(l.set.DiscoveryPrefix+"/status", 1, func(_ paho.Client, m paho.Message) {
-			if strings.TrimSpace(string(m.Payload())) != "online" {
-				return
+			if strings.TrimSpace(string(m.Payload())) == "online" {
+				l.logf("info", "Home Assistant came back; announcing everything again")
+				l.ask(true)
 			}
-			l.logf("info", "Home Assistant came back; announcing everything again")
-			l.mu.Lock()
-			l.announced = map[string]bool{}
-			l.mu.Unlock()
-			l.publish()
 		})
-		l.publish()
+		// A reconnect means the broker may have lost what it was holding, so announce again.
+		l.ask(true)
 	}
 	opts.OnConnectionLost = func(_ paho.Client, err error) {
 		l.logf("warn", "lost the broker: %v", err)
 		l.report("reconnecting", "warning")
 	}
+	// Handlers run on paho's router goroutine, and this one only signals, so ordering costs
+	// nothing and the router is never held up.
+	opts.SetOrderMatters(false)
 
 	l.client = paho.NewClient(opts)
-	if tok := l.client.Connect(); tok.Wait() && tok.Error() != nil {
-		return fmt.Errorf("connecting to %s: %w", l.set.Broker, tok.Error())
+	// With ConnectRetry set, paho never completes this token when the first attempt fails — it
+	// sleeps and tries again for ever — so Wait() would block here and the plugin would never
+	// reach its loop: no shutdown, no events read, and nothing on the card to say why.
+	tok := l.client.Connect()
+	select {
+	case <-tok.Done():
+		if err := tok.Error(); err != nil {
+			return fmt.Errorf("connecting to %s: %w", l.set.Broker, err)
+		}
+	case <-time.After(connectWait):
+		l.logf("warn", "no answer from %s yet; still trying in the background", l.set.Broker)
+		l.report("connecting to "+l.set.Broker, "warning")
+	case <-ctx.Done():
+		l.client.Disconnect(0)
+		return ctx.Err()
 	}
+	// However this ends, the broker connection goes with it. Left running, an auto-reconnecting
+	// client with the same client id fights the next session for the broker's one slot per id.
+	defer l.client.Disconnect(500)
 
-	// Ask for both pictures before the first publish. Without this the first publish would go
-	// out with no radio figures at all, and Home Assistant would record a counter reset and a
-	// radio that looks down, until the first status event 30 seconds later put it right.
 	if err := l.loadStatus(ctx); err != nil {
 		l.logf("warn", "could not read the radio status: %v", err)
 	}
@@ -203,15 +228,35 @@ func (l *Link) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			// Say goodbye properly rather than leaving the will to fire.
 			l.client.Publish(l.availTopic(), 1, true, "offline").WaitTimeout(2 * time.Second)
-			l.client.Disconnect(500)
 			return ctx.Err()
 		case <-tick.C:
-			l.publish()
+			l.publish(false)
+		case again := <-l.wake:
+			l.publish(again)
 		case msg, ok := <-l.c.Events():
 			if !ok {
 				return l.c.Err()
 			}
 			l.handle(msg)
+		}
+	}
+}
+
+// ask asks the run loop to publish. It never blocks: a request already waiting is enough, and one
+// that wants everything announced again wins over one that doesn't.
+func (l *Link) ask(announceAgain bool) {
+	select {
+	case l.wake <- announceAgain:
+	default:
+		if announceAgain {
+			select {
+			case <-l.wake:
+			default:
+			}
+			select {
+			case l.wake <- true:
+			default:
+			}
 		}
 	}
 }
@@ -311,6 +356,31 @@ func (l *Link) pub(topic string, v any, retain bool) {
 		return
 	}
 	l.client.Publish(topic, 0, retain, b)
+}
+
+// pubSure publishes something that has to arrive, and reports whether it did. paho drops a QoS 0
+// publish while it is reconnecting and still reports success, so discovery goes out at QoS 1 and
+// the result is waited for.
+func (l *Link) pubSure(topic string, v any) bool {
+	if l.publishFn != nil {
+		l.publishFn(topic, v, true)
+		return true
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		l.logf("warn", "could not encode %s: %v", topic, err)
+		return false
+	}
+	tok := l.client.Publish(topic, 1, true, b)
+	if !tok.WaitTimeout(publishWait) {
+		l.logf("warn", "the broker has not taken %s yet", topic)
+		return false
+	}
+	if err := tok.Error(); err != nil {
+		l.logf("warn", "publishing %s: %v", topic, err)
+		return false
+	}
+	return true
 }
 
 // clear publishes an empty retained payload, which is how a topic is taken back: Home Assistant

@@ -13,20 +13,22 @@ import (
 
 // publish sends the site's state and every node worth publishing. Everything Home Assistant reads
 // comes from these few retained topics, so a reader that connects later still sees current values.
-func (l *Link) publish() {
+func (l *Link) publish(announceAgain bool) {
 	if l.client == nil || !l.client.IsConnected() {
 		return
 	}
-	l.publishNoBroker()
+	l.publishNoBroker(announceAgain)
 }
 
 // publishNoBroker is publish once the broker has been checked, so tests can drive it with
-// publishFn standing in for a connection.
-func (l *Link) publishNoBroker() {
+// publishFn standing in for a connection. It runs only on the Run loop, so a pass never overlaps
+// another and the announce/forget bookkeeping stays consistent.
+func (l *Link) publishNoBroker(announceAgain bool) {
+
 	// With no figures yet, say nothing rather than publish zeros: a zero counter reads as a
 	// counter reset in Home Assistant's statistics, and a zeroed radio reads as one that is down.
 	if site := l.siteStateJSON(); site != nil {
-		l.announceSite()
+		l.announceSite(announceAgain)
 		l.pub(l.siteState(), site, true)
 	}
 
@@ -34,7 +36,7 @@ func (l *Link) publishNoBroker() {
 	live := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
 		live[strings.TrimPrefix(strings.ToLower(n.GetNodeId()), "!")] = true
-		l.announceNode(n)
+		l.announceNode(n, announceAgain)
 		l.pub(l.nodeState(n.GetNodeId()), nodeStateJSON(n), true)
 	}
 
@@ -78,6 +80,8 @@ func (l *Link) siteStateJSON() map[string]any {
 	var (
 		airtime, chanUtil, dutyLimit float64
 		noise                        int32
+		haveNoise                    bool
+		overDuty                     bool
 		radios                       int
 		connected                    = true
 		rx, tx, dupe, undec          uint64
@@ -101,8 +105,16 @@ func (l *Link) siteStateJSON() map[string]any {
 		airtime = max(airtime, r.GetAirtimeTxPct())
 		chanUtil = max(chanUtil, r.GetChannelUtilPct())
 		dutyLimit = max(dutyLimit, r.GetDutyLimitPct())
-		if noise == 0 || r.GetNoiseFloorDbm() > noise {
-			noise = r.GetNoiseFloorDbm()
+		// Each radio is over its own limit or it isn't. Comparing the busiest radio's airtime
+		// against another radio's limit reports a breach nobody is committing.
+		if limit := r.GetDutyLimitPct(); limit > 0 && r.GetAirtimeTxPct() > limit {
+			overDuty = true
+		}
+		// A noise floor is negative dBm, and zero means "not measured yet" rather than a very
+		// loud band. Taking the worst of the radios that have measured keeps a radio that has
+		// only just come up from publishing a 0 that ruins the statistics.
+		if n := r.GetNoiseFloorDbm(); n != 0 && (!haveNoise || n > noise) {
+			noise, haveNoise = n, true
 		}
 		connected = connected && r.GetConnected()
 		rx += r.GetRx()
@@ -123,10 +135,10 @@ func (l *Link) siteStateJSON() map[string]any {
 	if acks := ackOK + ackFail; acks > 0 {
 		ackPct = float64(ackOK) / float64(acks) * 100
 	}
-	return map[string]any{
+	out := map[string]any{
 		"airtime_tx_pct":   round1(airtime),
 		"channel_util_pct": round1(chanUtil),
-		"noise_floor_dbm":  noise,
+		"noise_floor_dbm":  nil,
 		"rx":               rx,
 		"tx":               tx,
 		"rx_dupe":          dupe,
@@ -135,10 +147,14 @@ func (l *Link) siteStateJSON() map[string]any {
 		"nodes_heard":      heard,
 		"queue":            queue,
 		"connected":        onOff(connected),
-		"duty_exceeded":    onOff(dutyLimit > 0 && airtime > dutyLimit),
+		"duty_exceeded":    onOff(overDuty),
 		"duty_limit_pct":   round1(dutyLimit),
 		"uptime_s":         uptime,
 	}
+	if haveNoise {
+		out["noise_floor_dbm"] = noise
+	}
+	return out
 }
 
 // nodesToPublish applies the scope, the picks and the ceiling. Picked nodes come first and are
@@ -199,10 +215,16 @@ func (l *Link) nodesToPublish() []*pluginv1.Node {
 	return out
 }
 
-// nodeStateJSON is one node's readings. A field it has never reported is left out rather than sent
-// as zero, so Home Assistant shows "unknown" instead of a confident wrong number.
+// nodeStateJSON is one node's readings. A field the node has stopped reporting is sent as null
+// rather than left out: Home Assistant ignores an empty render and keeps the last value, so an
+// omitted battery would sit at its final reading for ever and a low-battery automation would
+// never fire. Null renders as "None", which Home Assistant reads as unknown.
 func nodeStateJSON(n *pluginv1.Node) map[string]any {
-	state := map[string]any{}
+	state := map[string]any{
+		"battery": nil, "powered": nil, "voltage": nil,
+		"channel_util_pct": nil, "air_util_tx_pct": nil,
+		"last_heard": nil, "snr": nil, "rssi": nil, "hops": nil,
+	}
 	if m := deviceMetrics(n); m != nil {
 		// Meshtastic reports 101 for a node running on external power. Home Assistant would draw
 		// that as a 101% battery, so say "powered" instead and keep the percentage honest.
@@ -226,11 +248,9 @@ func nodeStateJSON(n *pluginv1.Node) map[string]any {
 	}
 	if ms := n.GetLastHeardMs(); ms > 0 {
 		state["last_heard"] = time.UnixMilli(ms).UTC().Format(time.RFC3339)
-	}
-	if n.GetSnr() != 0 {
+		// Once a node has been heard, its signal figures are real readings — including a zero,
+		// which is an ordinary SNR and was previously thrown away as if it meant "unknown".
 		state["snr"] = round1(float64(n.GetSnr()))
-	}
-	if n.GetRssi() != 0 {
 		state["rssi"] = n.GetRssi()
 	}
 	if h := n.GetHopsAway(); h >= 0 {

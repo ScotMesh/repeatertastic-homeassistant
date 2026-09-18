@@ -77,12 +77,15 @@ var nodeEntities = []entity{
 		Class: "power", Category: "diagnostic"},
 }
 
-func (l *Link) announceSite() {
+// announceSite publishes the site's discovery documents. again re-sends them even if they have
+// been sent before — Home Assistant's birth message means it may have lost them — while keeping
+// the record of what has been announced, because that record is what later removes a node's
+// entities when it drops out of the list.
+func (l *Link) announceSite(again bool) {
 	l.mu.Lock()
 	done := l.announced[l.site]
-	l.announced[l.site] = true
 	l.mu.Unlock()
-	if done {
+	if done && !again {
 		return
 	}
 
@@ -103,18 +106,25 @@ func (l *Link) announceSite() {
 		"model":        model,
 		"sw_version":   l.ver,
 	}
+	ok := true
 	for _, e := range siteEntities {
-		l.announce(e, dev, "rt_"+l.site, l.siteState(), name)
+		ok = l.announce(e, dev, "rt_"+l.site, l.siteState(), name) && ok
+	}
+	// Only remembered once the broker has it: a document dropped while reconnecting would
+	// otherwise never be sent again, leaving Home Assistant with no entities at all.
+	if ok {
+		l.mu.Lock()
+		l.announced[l.site] = true
+		l.mu.Unlock()
 	}
 }
 
-func (l *Link) announceNode(n *pluginv1.Node) {
+func (l *Link) announceNode(n *pluginv1.Node, again bool) {
 	id := strings.TrimPrefix(n.GetNodeId(), "!")
 	l.mu.Lock()
 	done := l.announced[id]
-	l.announced[id] = true
 	l.mu.Unlock()
-	if done {
+	if done && !again {
 		return
 	}
 
@@ -135,12 +145,19 @@ func (l *Link) announceNode(n *pluginv1.Node) {
 		"model":        model,
 		"via_device":   "rt_" + l.site,
 	}
+	ok := true
 	for _, e := range nodeEntities {
-		l.announce(e, dev, "rt_node_"+id, l.nodeState(id), name)
+		ok = l.announce(e, dev, "rt_node_"+id, l.nodeState(id), name) && ok
+	}
+	if ok {
+		l.mu.Lock()
+		l.announced[id] = true
+		l.mu.Unlock()
 	}
 }
 
-func (l *Link) announce(e entity, device map[string]any, uidRoot, stateTopic, devName string) {
+// announce publishes one entity's discovery document, and reports whether the broker took it.
+func (l *Link) announce(e entity, device map[string]any, uidRoot, stateTopic, devName string) bool {
 	cfg := map[string]any{
 		"name":                  e.Name,
 		"unique_id":             uidRoot + "_" + e.Key,
@@ -176,7 +193,7 @@ func (l *Link) announce(e entity, device map[string]any, uidRoot, stateTopic, de
 		delete(cfg, "state_class")
 	}
 	topic := fmt.Sprintf("%s/%s/%s/%s/config", l.set.DiscoveryPrefix, e.Component, uidRoot, e.Key)
-	l.pub(topic, cfg, true)
+	return l.pubSure(topic, cfg)
 }
 
 // forget removes a node's entities from Home Assistant. Discovery is retained, so without this a
