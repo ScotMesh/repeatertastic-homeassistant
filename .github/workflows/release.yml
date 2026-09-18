@@ -1,0 +1,41 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # Secrets can't be read in an if:, so it is put here and the step checks env.
+      STORE_TOKEN: ${{ secrets.STORE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test
+      - name: Bundle
+        run: ./scripts/bundle.sh "${GITHUB_REF_NAME}" "dist/repeatertastic-homeassistant-${GITHUB_REF_NAME}.zip"
+      - name: Checksums
+        run: cd dist && sha256sum *.zip > SHA256SUMS
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --generate-notes
+
+      # Ask the store to read this release and open its own pull request. It reads the checksum
+      # and permissions out of the bundle, so nothing is typed by hand here.
+      # STORE_TOKEN needs actions:write on ScotMesh/repeatertastic-plugins; without it the release
+      # still happens and the store is updated by hand.
+      - name: Offer it to the store
+        if: env.STORE_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.STORE_TOKEN }}
+        run: |
+          gh workflow run add-release.yml -R ScotMesh/repeatertastic-plugins \
+            -f repo="${GITHUB_REPOSITORY}" -f tag="${GITHUB_REF_NAME}"

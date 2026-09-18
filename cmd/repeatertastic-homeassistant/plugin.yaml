@@ -1,0 +1,93 @@
+# RepeaterTastic plugin manifest. scripts/bundle.sh copies it to the root of the bundle.
+id: homeassistant
+name: Home Assistant
+version: 0.0.0 # set by scripts/bundle.sh
+api: 1
+description: Publishes the site and the nodes you pick to Home Assistant over MQTT, as devices with sensors. Nothing to configure at the Home Assistant end.
+author: ScotMesh
+homepage: https://github.com/ScotMesh/repeatertastic-homeassistant
+license: GPL-3.0-or-later
+logo: logo.svg
+permissions:
+  - status.read
+  - nodes.read
+  - messages.read
+network:
+  - your Home Assistant MQTT broker
+settings:
+  - key: broker
+    label: MQTT broker
+    type: string
+    required: true
+    placeholder: homeassistant.local:1883
+    help: Host and port of the broker Home Assistant uses (Mosquitto, usually on port 1883).
+  - key: username
+    label: Username
+    type: string
+    help: Leave both blank if the broker allows anonymous connections.
+  - key: password
+    label: Password
+    type: secret
+  - key: tls
+    label: Connect with TLS
+    type: bool
+    default: false
+    help: For a broker on port 8883. Most home installs don't use this.
+
+  - key: nodes
+    label: Nodes to publish
+    type: nodes
+    placeholder: None chosen
+    help: Each one becomes a device in Home Assistant with battery, last heard and signal. Picked nodes are always published and never dropped for going quiet.
+  - key: scope
+    label: Also publish
+    type: select
+    options: [picked, telemetry, direct, all]
+    default: picked
+    help: "picked: only the nodes above. telemetry: any node reporting a battery. direct: any node heard without a hop. all: everything heard recently."
+  - key: max_nodes
+    label: At most
+    type: int
+    default: 100
+    help: A ceiling on the extra nodes, so a busy mesh doesn't fill Home Assistant. Picked nodes don't count against it.
+  - key: stale_after_hours
+    label: Forget a node after
+    type: int
+    default: 24
+    help: Hours of silence before an unpicked node stops being published and its readings go unavailable.
+
+  - key: radios
+    label: Radios
+    type: radios
+    placeholder: All radios
+    help: The radios to publish; none ticked publishes every radio.
+  - key: interval_seconds
+    label: Publish every
+    type: int
+    default: 30
+    help: Seconds between updates. Nothing is sent on the mesh, so this only costs your broker.
+
+  - key: channel_messages
+    label: Publish channel messages
+    type: bool
+    default: false
+    help: Each text message heard on a channel is sent as an MQTT event you can trigger automations on. Not retained.
+  - key: direct_messages
+    label: Publish direct messages
+    type: bool
+    default: false
+    help: The same for direct messages to this site's identities. Anyone with the broker can then read them.
+
+  - key: discovery_prefix
+    label: Discovery prefix
+    type: string
+    placeholder: homeassistant
+    help: Only if you changed Home Assistant's MQTT discovery prefix from the default.
+  - key: base_topic
+    label: Base topic
+    type: string
+    placeholder: repeatertastic
+    help: The topic this plugin publishes its state under.
+run:
+  managed:
+    exec: bin/repeatertastic-homeassistant-{os}-{arch}
