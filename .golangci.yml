@@ -1,0 +1,28 @@
+# golangci-lint v2: `make lint`. The default set (errcheck, govet, ineffassign, staticcheck,
+# unused) plus the checks that have found real problems in RepeaterTastic itself.
+version: "2"
+run:
+  timeout: 5m
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gosec
+    - nilerr
+    - unconvert
+    - unparam
+    - wastedassign
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1000 # package comments
+  exclusions:
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec, unparam]
+      # Publishing to a broker that is going away, and closing what is already closing.
+      - linters: [errcheck]
+        text: "Error return value of `(.*\\.)?(Close|Publish|Fprintf?|Fprintln)` is not checked"

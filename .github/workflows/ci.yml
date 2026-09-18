@@ -14,6 +14,10 @@ jobs:
           go-version-file: go.mod
       - name: Format
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.13
       - name: Vet and test
         run: make test
       - name: Bundle
